@@ -66,6 +66,8 @@ int sysctl_mptcp_checksum __read_mostly = 1;
 int sysctl_mptcp_debug __read_mostly;
 EXPORT_SYMBOL(sysctl_mptcp_debug);
 int sysctl_mptcp_syn_retries __read_mostly = 3;
+int sysctl_mptcp_scheduler __read_mostly = 0;
+int sysctl_mptcp_print_log __read_mostly = 0;
 
 bool mptcp_init_failed __read_mostly;
 
@@ -113,6 +115,20 @@ static struct ctl_table mptcp_table[] = {
 	{
 		.procname = "mptcp_syn_retries",
 		.data = &sysctl_mptcp_syn_retries,
+		.maxlen = sizeof(int),
+		.mode = 0644,
+		.proc_handler = &proc_dointvec
+	},
+	{
+		.procname = "mptcp_scheduler",
+		.data = &sysctl_mptcp_scheduler,
+		.maxlen = sizeof(int),
+		.mode = 0644,
+		.proc_handler = &proc_dointvec
+	},
+	{
+		.procname = "mptcp_print_log",
+		.data = &sysctl_mptcp_print_log,
 		.maxlen = sizeof(int),
 		.mode = 0644,
 		.proc_handler = &proc_dointvec
@@ -1160,7 +1176,6 @@ int mptcp_add_sock(struct sock *meta_sk, struct sock *sk, u8 loc_id, u8 rem_id,
 {
 	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 	struct tcp_sock *tp = tcp_sk(sk);
-
 	tp->mptcp = kmem_cache_zalloc(mptcp_sock_cache, flags);
 	if (!tp->mptcp)
 		return -ENOMEM;
@@ -1181,6 +1196,11 @@ int mptcp_add_sock(struct sock *meta_sk, struct sock *sk, u8 loc_id, u8 rem_id,
 	tp->mptcp->loc_id = loc_id;
 	tp->mptcp->rem_id = rem_id;
 	tp->mptcp->last_rbuf_opti = tcp_time_stamp;
+	tp->mptcp->schedule_ratio = 10000000;
+	tp->mptcp->last_data_ack = 0;
+	tp->mptcp->retx_seq = 0;
+	tp->mptcp->alloc_byte = 0;
+	tp->mptcp->unacked_byte = 0;
 
 	/* The corresponding sock_put is in mptcp_sock_destruct(). It cannot be
 	 * included in mptcp_del_sock(), because the mpcb must remain alive

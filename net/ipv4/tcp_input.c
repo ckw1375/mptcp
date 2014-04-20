@@ -2985,6 +2985,13 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 		struct tcp_skb_cb *scb = TCP_SKB_CB(skb);
 		u32 acked_pcount;
 		u8 sacked = scb->sacked;
+		u64 data_seq_no;
+		u64 seq_no = scb->seq;
+		u64 acked_seq_no;
+		u64 acked_data_seq_no;
+
+		if (tp->mpc)
+			data_seq_no = scb->data_seq_no;
 
 		/* Determine how many packets and what bytes were acked, tso and else */
 		if (after(scb->end_seq, tp->snd_una)) {
@@ -2993,12 +3000,30 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 				break;
 
 			acked_pcount = tcp_tso_acked(sk, skb);
+			//Setting acked_seq_no and update data_seq_no in tcp control block
+			if (tp->mpc) {
+				acked_seq_no = scb->seq;
+				scb->data_seq_no += acked_seq_no - seq_no;
+			}
 			if (!acked_pcount)
 				break;
 
 			fully_acked = false;
 		} else {
 			acked_pcount = tcp_skb_pcount(skb);
+			if (tp->mpc) 
+				acked_seq_no = scb->end_seq;
+		}
+
+		if (tp->mpc) {
+			acked_data_seq_no = acked_seq_no - seq_no + data_seq_no;
+			if (mptcp_sk_can_send(sk) && acked_data_seq_no > 0) {
+				if (acked_data_seq_no > tp->mptcp->last_data_ack) {		
+					tp->mptcp->last_data_ack = acked_data_seq_no;
+					tp->mptcp->unacked_byte -= acked_seq_no - seq_no;
+				}
+				mptcp_update_scheduling_ratio(sk);
+			}
 		}
 
 		if (sacked & TCPCB_RETRANS) {

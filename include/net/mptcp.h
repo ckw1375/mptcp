@@ -207,6 +207,17 @@ struct mptcp_tcp_sock {
 
 	/* HMAC of the third ack */
 	char sender_mac[20];
+
+	/* Scheduling ratio */
+	u64	schedule_ratio;
+	/* Data sequence number of last acknowledgement */
+	u64	last_data_ack;
+	/* Data sequence number of last retransmittion */
+	u64	retx_seq;
+	/* Number of bytes in the meta-socket allocated to this subflow */
+	u64	alloc_byte;
+	/* Number of unacked bytes in the meta-socket allocated to this subflow */
+	u64	unacked_byte;
 };
 
 struct mptcp_tw {
@@ -628,6 +639,8 @@ extern int sysctl_mptcp_enabled;
 extern int sysctl_mptcp_checksum;
 extern int sysctl_mptcp_debug;
 extern int sysctl_mptcp_syn_retries;
+extern int sysctl_mptcp_scheduler;
+extern int sysctl_mptcp_print_log;
 
 extern struct workqueue_struct *mptcp_wq;
 
@@ -774,6 +787,7 @@ bool mptcp_should_expand_sndbuf(struct sock *meta_sk);
 int mptcp_retransmit_skb(struct sock *meta_sk, struct sk_buff *skb);
 void mptcp_tsq_flags(struct sock *sk);
 void mptcp_tsq_sub_deferred(struct sock *meta_sk);
+void mptcp_update_scheduling_ratio(struct sock *sk); //added by kaewon
 struct mp_join *mptcp_find_join(struct sk_buff *skb);
 void mptcp_hash_remove_bh(struct tcp_sock *meta_tp);
 void mptcp_hash_remove(struct tcp_sock *meta_tp);

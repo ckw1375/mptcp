@@ -86,6 +86,302 @@ static inline int mptcp_tso_acked_reinject(struct sock *sk, struct sk_buff *skb)
 	return packets_acked;
 }
 
+//needed by get_subflow_bytes
+static inline int mptcp_pi_to_flag(int pi)
+{
+	return 1 << (pi - 1);
+}
+
+/*
+//calculating state of meta-queue (modified by kaewon)
+u64 get_subflow_bytes(struct sock *sk, u64 ack_seq, u64 *unacked, u64 *ratio_alloc, u64 *thresh)
+{
+        struct tcp_sock *tp = tcp_sk(sk);
+	struct tcp_sock *meta_tp = mptcp_meta_tp(tp);
+        struct sock *meta_sk = tp->meta_sk;
+	struct mptcp_cb *mpcb = meta_tp->mpcb;
+        struct sk_buff *skb_it;
+	struct sock *sk_it;
+        u64 alloc_bytes = 0;
+	u64 wnd_bytes = 0;
+	u32 skb_size;
+	u64 ratio; 
+	u64 total_ratio = 0;
+	u32 cnt = 0;
+
+	if(unacked)
+		*unacked = 0;
+	if(ratio_alloc)
+		*ratio_alloc = 0;
+
+        skb_queue_walk(&meta_sk->sk_write_queue, skb_it) {
+		struct tcp_skb_cb *tcb = TCP_SKB_CB(skb_it);
+		if (before64(tcb->seq, meta_tp->snd_una))
+			continue;
+		if (!before64(tcb->seq, tcp_wnd_end(meta_tp)))
+			break;
+		skb_size = tcb->end_seq - tcb->seq;
+		wnd_bytes += skb_size;
+		if (!after(tcb->end_seq, meta_tp->snd_nxt) 
+			&& (tcb->path_mask & mptcp_pi_to_flag(tp->mptcp->path_index)) ) {
+			alloc_bytes += skb_size;
+			if(unacked && !after64(ack_seq, tcb->seq))
+				(*unacked) += skb_size;
+		}
+	}
+
+	if(wnd_bytes > meta_tp->snd_wnd) 
+		wnd_bytes = meta_tp->snd_wnd;
+
+	ratio = tp->mptcp->schedule_ratio;
+	if (ratio < 2000000)
+		ratio = 0;
+	else
+		ratio -= 2000000;
+
+	mptcp_for_each_sk(mpcb, sk_it) {
+		struct tcp_sock *tp_it = tcp_sk(sk_it);
+		if(!mptcp_sk_can_send(sk_it))
+			continue;
+		total_ratio += tp_it->mptcp->schedule_ratio;
+		cnt ++;
+	}
+	total_ratio -= cnt * 2000000;
+	if (ratio > total_ratio)
+		ratio = total_ratio;
+		
+	(*ratio_alloc) = (wnd_bytes * ratio)/total_ratio;
+	(*thresh) = wnd_bytes/20;
+
+	//printk("[get_subflow_bytes] %llu %llu %llu %llu\n", alloc_bytes, (*unacked), (*ratio_alloc), (*thresh));
+	
+        return alloc_bytes;
+}
+
+//updating scheduling ratio (written by kaewon)
+void mptcp_update_scheduling_ratio(struct sock *sk, u64 acked_data_seq_no)
+{
+        struct tcp_sock *tp = tcp_sk(sk);
+        struct mptcp_tcp_sock *mpsk = tp->mptcp;
+	struct sock *meta_sk = tp->meta_sk;
+        struct tcp_sock *meta_tp = mptcp_meta_tp(tp);
+        struct mptcp_cb *mpcb = meta_tp->mpcb;
+        struct sock *sk_it;
+        u64 delta;
+        u64 taken = 0;
+	u64 alloc_bytes;
+	u64 sf_unacked;
+	u64 ratio_alloc;
+	u64 a, diff;	
+	u64 mss_now;
+	u64 thresh;
+	u64 data_ack = 0xffffffffffffffff;
+	u64 tmp;
+
+	if (!(meta_sk->sk_write_pending && sk_stream_wspace(meta_sk) < sk_stream_min_wspace(meta_sk)))
+		return;	
+
+        mptcp_for_each_sk(mpcb, sk_it) {
+                struct tcp_sock *tp_it = tcp_sk(sk_it);
+                if (!mptcp_sk_can_send(sk_it))
+                        continue;
+		if (tp_it->mptcp->last_data_ack < data_ack)
+			data_ack = tp_it->mptcp->last_data_ack;
+        }
+	data_ack = max_t(u64, data_ack, meta_tp->snd_una);
+
+        if (acked_data_seq_no <= data_ack)
+                return;
+
+	mss_now = tcp_current_mss(sk);
+	alloc_bytes = get_subflow_bytes(sk, acked_data_seq_no, &sf_unacked, &ratio_alloc, &thresh);
+
+	if (alloc_bytes + thresh < ratio_alloc)
+		return;
+
+	a = min_t(u32, alloc_bytes/mss_now, tp->snd_cwnd);
+	tmp = sf_unacked/mss_now;
+
+	if (a <= tmp || a == 0)
+		return;
+	else
+		diff = a - tmp;
+	
+	delta = (1000000*diff)/a/a;
+
+        //printk("[delta] %lu %lu %llu %llu %llu %llu %llu %llu %llu\n", jiffies, tp->mptcp->path_index, sf_unacked, mss_now, diff, a, delta, alloc_bytes, ratio_alloc);
+
+	//printk("[update_scheduling_ratio] %lu %u %llu %llu\n", jiffies, tp->mptcp->path_index, tp->mptcp->schedule_ratio, tp->mptcp->last_data_ack);
+
+        mptcp_for_each_sk(mpcb, sk_it) {
+                u64 tmp;
+                struct tcp_sock *tp_it = tcp_sk(sk_it);
+                if(sk_it == sk || !mptcp_sk_can_send(sk_it))
+                        continue;
+                tmp = min_t(u64, tp_it->mptcp->schedule_ratio, delta);
+                tp_it->mptcp->schedule_ratio -= tmp;
+                taken += tmp;
+
+        }
+        mpsk->schedule_ratio += taken;
+}
+*/
+
+u64 get_ratio_alloc_thresh(struct sock *sk, u64 *thresh)
+{
+        struct tcp_sock *tp = tcp_sk(sk);
+	struct tcp_sock *meta_tp = mptcp_meta_tp(tp);
+	struct mptcp_cb *mpcb = meta_tp->mpcb;
+	struct sock *sk_it;
+	int cnt = 0;
+	u64 ratio = tp->mptcp->schedule_ratio;
+	u64 wnd_bytes = min_t(u64, meta_tp->snd_wnd, meta_tp->write_seq - meta_tp->snd_una);
+	u64 total_ratio;
+
+	mptcp_for_each_sk(mpcb, sk_it) {
+		struct tcp_sock *tp_it = tcp_sk(sk_it);
+		if(!mptcp_sk_can_send(sk_it))
+			continue;
+		cnt ++;
+	}
+	total_ratio = cnt * 10000000;
+
+	if (ratio > total_ratio)
+		ratio = total_ratio;
+
+	(*thresh) = wnd_bytes/20;
+	
+        return (wnd_bytes * ratio)/total_ratio;
+}
+
+void mptcp_update_scheduling_ratio_original(struct sock *sk)
+{
+        struct tcp_sock *tp = tcp_sk(sk);
+        struct mptcp_tcp_sock *mpsk = tp->mptcp;
+	struct sock *meta_sk = tp->meta_sk;
+        struct tcp_sock *meta_tp = mptcp_meta_tp(tp);
+        struct mptcp_cb *mpcb = meta_tp->mpcb;
+        struct sock *sk_it;
+        u64 delta;
+        u64 taken = 0;
+	u64 alloc_byte = tp->mptcp->alloc_byte;
+	u64 unacked_byte = tp->mptcp->unacked_byte;
+	u64 ratio_alloc;
+	u64 a, diff;	
+	u64 mss_now;
+	u64 thresh;
+	u64 tmp;
+
+	if (!(meta_sk->sk_write_pending && sk_stream_wspace(meta_sk) < sk_stream_min_wspace(meta_sk)))
+		return;	
+
+	if (mpsk->schedule_ratio == 0)
+		return;
+
+	mss_now = tcp_current_mss(sk);
+	ratio_alloc = get_ratio_alloc_thresh(sk, &thresh);
+
+	if (alloc_byte + thresh < ratio_alloc)
+		return;
+
+	a = min_t(u32, alloc_byte/mss_now, tp->snd_cwnd);
+	tmp = unacked_byte/mss_now;
+
+	if (a <= tmp || a == 0)
+		return;
+	else
+		diff = a - tmp;
+	
+	delta = (1000000*diff)/a/a;
+
+        mptcp_for_each_sk(mpcb, sk_it) {
+                u64 tmp;
+                struct tcp_sock *tp_it = tcp_sk(sk_it);
+                if(sk_it == sk || !mptcp_sk_can_send(sk_it))
+                        continue;
+                tmp = min_t(u64, tp_it->mptcp->schedule_ratio, delta);
+                tp_it->mptcp->schedule_ratio -= tmp;
+                taken += tmp;
+
+        }
+        mpsk->schedule_ratio += taken;
+}
+
+u64 get_alloc_ratio(struct sock *sk)
+{
+        struct tcp_sock *tp = tcp_sk(sk);
+	struct tcp_sock *meta_tp = mptcp_meta_tp(tp);
+	u64 total_alloc_byte = meta_tp->snd_nxt - meta_tp->snd_una;
+	struct mptcp_cb *mpcb = meta_tp->mpcb;
+	struct sock *sk_it;
+	int cnt = 0;
+
+	mptcp_for_each_sk(mpcb, sk_it) {
+		struct tcp_sock *tp_it = tcp_sk(sk_it);
+		if(!mptcp_sk_can_send(sk_it))
+			continue;
+		cnt ++;
+	}
+
+        return ((tp->mptcp->alloc_byte * 10000000)/total_alloc_byte) * cnt;
+}
+
+void mptcp_update_scheduling_ratio(struct sock *sk)
+{
+        struct tcp_sock *tp = tcp_sk(sk);
+        struct mptcp_tcp_sock *mpsk = tp->mptcp;
+	struct sock *meta_sk = tp->meta_sk;
+        struct tcp_sock *meta_tp = mptcp_meta_tp(tp);
+        struct mptcp_cb *mpcb = meta_tp->mpcb;
+        struct sock *sk_it;
+        u64 delta;
+        u64 taken;
+	u64 alloc_byte = tp->mptcp->alloc_byte;
+	u64 unacked_byte = tp->mptcp->unacked_byte;
+	u64 alloc_ratio = get_alloc_ratio(sk);
+	u64 schedule_ratio = mpsk->schedule_ratio;
+	u64 a, diff;	
+	u64 mss_now;
+	u64 tmp;
+
+	if (!(meta_sk->sk_write_pending && sk_stream_wspace(meta_sk) < sk_stream_min_wspace(meta_sk)))
+		return;	
+	if (schedule_ratio == 0)
+		return;
+	//First case: schedule_ratio is too high
+	if (alloc_ratio + 1000000 < schedule_ratio)
+		return;
+	//Second case: schedule_ratio is too low
+	if (alloc_ratio > schedule_ratio + 1000000) {
+		delta = (alloc_ratio - schedule_ratio)/10000;
+	} else {
+	//Third case: normal update
+		mss_now = tcp_current_mss(sk);
+		a = min_t(u32, alloc_byte/mss_now, tp->snd_cwnd);
+		tmp = unacked_byte/mss_now;
+
+		if (a <= tmp || a == 0)
+			return;
+		else
+			diff = a - tmp;
+	
+		delta = (1000000*diff)/a/a;
+	}
+
+	taken = 0;
+        mptcp_for_each_sk(mpcb, sk_it) {
+                u64 tmp;
+                struct tcp_sock *tp_it = tcp_sk(sk_it);
+                if(sk_it == sk || !mptcp_sk_can_send(sk_it))
+                        continue;
+                tmp = min_t(u64, tp_it->mptcp->schedule_ratio, delta);
+                tp_it->mptcp->schedule_ratio -= tmp;
+                taken += tmp;
+
+        }
+        mpsk->schedule_ratio += taken;
+}
+
 /**
  * Cleans the meta-socket retransmission queue and the reinject-queue.
  * @sk must be the metasocket.
@@ -97,10 +393,13 @@ static void mptcp_clean_rtx_queue(struct sock *meta_sk, u32 prior_snd_una)
 	struct mptcp_cb *mpcb = meta_tp->mpcb;
 	bool acked = false;
 	u32 acked_pcount;
+	u64 acked_data_seq_no;
+	struct sock *sk_it;
 
 	while ((skb = tcp_write_queue_head(meta_sk)) &&
 	       skb != tcp_send_head(meta_sk)) {
 		bool fully_acked = true;
+		u64 tmp_seq_no = TCP_SKB_CB(skb)->seq;
 
 		if (before(meta_tp->snd_una, TCP_SKB_CB(skb)->end_seq)) {
 			if (tcp_skb_pcount(skb) == 1 ||
@@ -112,8 +411,24 @@ static void mptcp_clean_rtx_queue(struct sock *meta_sk, u32 prior_snd_una)
 				break;
 
 			fully_acked = false;
+			acked_data_seq_no = TCP_SKB_CB(skb)->seq;
 		} else {
 			acked_pcount = tcp_skb_pcount(skb);
+			acked_data_seq_no = TCP_SKB_CB(skb)->end_seq;
+		}
+
+		mptcp_for_each_sk(mpcb, sk_it) {
+			struct tcp_sock *tp_it = tcp_sk(sk_it);
+			u32 size =  acked_data_seq_no - tmp_seq_no;
+			if (!mptcp_sk_can_send(sk_it))
+				continue;
+			if (TCP_SKB_CB(skb)->path_mask & mptcp_pi_to_flag(tp_it->mptcp->path_index)) {
+				tp_it->mptcp->alloc_byte -= size;
+				if (acked_data_seq_no > tp_it->mptcp->last_data_ack)
+					tp_it->mptcp->unacked_byte -= size;
+			}
+			if (acked_data_seq_no > tp_it->mptcp->last_data_ack)
+				tp_it->mptcp->last_data_ack = acked_data_seq_no;
 		}
 
 		acked = true;
